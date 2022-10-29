@@ -18,6 +18,11 @@ cudnnDataType_t getCudnnDataTypeFromScalarType(const at::ScalarType dtype) {
   } else if (dtype == at::kChar) {
     return CUDNN_DATA_INT8;
   }
+#if defined(CUDNN_VERSION) && CUDNN_VERSION >= 8200
+  else if (dtype == at::kBFloat16) {
+    return CUDNN_DATA_BFLOAT16;
+  }
+#endif
   std::string msg("getCudnnDataTypeFromScalarType() not supported for ");
   msg += toString(dtype);
   throw std::runtime_error(msg);

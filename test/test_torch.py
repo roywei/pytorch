@@ -52,7 +52,7 @@ from torch.testing._internal.common_device_type import (
 from typing import Tuple
 import torch.backends.quantized
 import torch.testing._internal.data
-from torch.testing._internal.common_cuda import tf32_on_and_off, tf32_is_not_fp32
+from torch.testing._internal.common_cuda import tf32_on_and_off, tf32_is_not_fp32, tf32_off
 from torch.testing._internal.common_dtype import (
     get_all_fp_dtypes, get_all_int_dtypes, get_all_math_dtypes, get_all_dtypes, get_all_complex_dtypes
 )
@@ -2635,6 +2635,43 @@ else:
         expected_val = torch.tensor([[0, 1, 2, 3, 3, 3], [4, 5, 6, 6, 6, 7]], device=device, dtype=torch.float)
         expected_ind = torch.tensor([[0, 1, 2, 3, 3, 3], [0, 1, 2, 2, 4, 5]], device=device, dtype=torch.long)
         self._test_cumminmax_helper(x, torch.cummax, expected_val, expected_ind)
+    
+    @onlyNativeDeviceTypes
+    @tf32_on_and_off(0.005)
+    @dtypes(torch.int, torch.float, torch.cfloat)
+    def test_corrcoef(self, device, dtype):
+        for x in self._generate_correlation_tensors(device, dtype):
+            if x.dtype == torch.int32:
+                with tf32_off():
+                    res = torch.corrcoef(x)
+                    ref = np.corrcoef(x.cpu().numpy())
+                    self.assertEqual(res, ref, exact_dtype=False)
+            else:
+                res = torch.corrcoef(x)
+                ref = np.corrcoef(x.cpu().numpy())
+                self.assertEqual(res, ref, exact_dtype=False)
+
+    @tf32_on_and_off(0.05)
+    @dtypes(torch.int, torch.float, torch.cfloat)
+    def test_cov(self, device, dtype):
+        def check(t, correction=1, fweights=None, aweights=None):
+            res = torch.cov(t, correction=correction, fweights=fweights, aweights=aweights)
+            t = t.cpu().numpy()
+            fweights = fweights.cpu().numpy() if fweights is not None else None
+            aweights = aweights.cpu().numpy() if aweights is not None else None
+            ref = np.cov(t, ddof=correction, fweights=fweights, aweights=aweights)
+            self.assertEqual(res, ref, atol=1e-05, rtol=1e-05, exact_dtype=False)
+
+        for x in self._generate_correlation_tensors(device, dtype):
+            if x.dtype == torch.int32:
+                with tf32_off():
+                    check(x)
+                    num_observations = x.numel() if x.ndim < 2 else x.size(1)
+                    if num_observations > 0:
+                        fweights = torch.randint(1, 10, (num_observations,), device=device)
+                        aweights = make_tensor((num_observations,), device, torch.float, low=1)
+                        for correction, fw, aw in product([0, 1, 2], [None, fweights], [None, aweights]):
+                            check(x, correction, fweights, aweights)
 
     def test_cummin_discontiguous(self, device):
         x = torch.tensor([[3, 2, 1, 0, 1, 2], [7, 6, 5, 4, 5, 2]], device=device, dtype=torch.float).t().contiguous().t()

@@ -25,6 +25,7 @@ from torch.testing._internal.jit_metaprogramming_utils import create_script_fn, 
 from torch.testing._internal.jit_utils import disable_autodiff_subgraph_inlining, is_lambda
 import torch.testing._internal.opinfo_helper as opinfo_helper
 from torch.testing._internal.composite_compliance import _check_composite_compliance
+from torch.testing._internal.common_cuda import with_tf32_off, tf32_on_and_off
 
 # TODO: fixme https://github.com/pytorch/pytorch/issues/68972
 torch.set_default_dtype(torch.float32)
@@ -237,6 +238,7 @@ class TestCommon(TestCase):
     @onlyNativeDeviceTypes
     @suppress_warnings
     @ops(op_db, allowed_dtypes=(torch.float32, torch.long, torch.complex64))
+    @with_tf32_off
     def test_noncontiguous_samples(self, device, dtype, op):
         test_grad = dtype in op.supported_backward_dtypes(torch.device(device).type)
         sample_inputs = op.sample_inputs(device, dtype, requires_grad=test_grad)
@@ -301,6 +303,7 @@ class TestCommon(TestCase):
     #   incorrectly sized out parameter warning properly yet
     # Cases test here:
     #   - out= with the correct dtype and device, but the wrong shape
+    @tf32_on_and_off(0.08)
     @ops(op_db, dtypes=OpDTypes.none)
     def test_out_warning(self, device, op):
         # TODO: verify the op doesn't support the out= kwarg
@@ -403,6 +406,7 @@ class TestCommon(TestCase):
     #   - Case 3: out has the correct shape and dtype, but is on a different device type
     #   - Case 4: out has the with correct shape and device, but a dtype that cannot
     #       "safely" cast to
+    @tf32_on_and_off(0.09)
     @ops(op_db, dtypes=OpDTypes.none)
     def test_out(self, device, op):
         # TODO: verify the op doesn't support the out= kwarg
@@ -956,6 +960,9 @@ class TestJit(JitCommonTestCase):
         # Acquires variants to test
         func = op.get_op()
         method = op.get_method()
+        prev_tf32 = torch.backends.cuda.matmul.allow_tf32
+        if 'linalg' in str(func) or 'svd' in str(func) or 'symeig' in str(func):
+            torch.backends.cuda.matmul.allow_tf32 = False
         variants = {
             # TODO: inplace tests currently fail, fix and add inplace variant
             'function': func, 'method': method,
@@ -1075,6 +1082,7 @@ class TestJit(JitCommonTestCase):
                             self.assertAutodiffNode(traced_fn.last_graph, op.assert_autodiffed, nonfusible_nodes, fusible_nodes)
                         if support_script:
                             self.assertAutodiffNode(script_fn.last_graph, op.assert_autodiffed, nonfusible_nodes, fusible_nodes)
+        torch.backends.cuda.matmul.allow_tf32 = prev_tf32
         assert tested, "JIT Test does not execute any logic"
 
     # alias testing is only done with torch.float for the same reason

@@ -16431,10 +16431,10 @@ class TestNNDeviceType(NNTestCase):
         maxdiff1 = (ret.narrow(0, 1024, 1024) - conv(input_large.narrow(0, 1024, 1024))).abs_().max().item()
         maxdiff2 = (ret.narrow(0, 2048, 1024) - conv(input_large.narrow(0, 2048, 1024))).abs_().max().item()
         maxdiff3 = (ret.narrow(0, 3072, 1024) - conv(input_large.narrow(0, 3072, 1024))).abs_().max().item()
-        self.assertEqual(maxdiff0, 0)
-        self.assertEqual(maxdiff1, 0)
-        self.assertEqual(maxdiff2, 0)
-        self.assertEqual(maxdiff3, 0)
+        self.assertEqual(maxdiff0, 0, atol=5e-2, rtol=5e-3)
+        self.assertEqual(maxdiff1, 0, atol=5e-2, rtol=5e-3)
+        self.assertEqual(maxdiff2, 0, atol=5e-2, rtol=5e-3)
+        self.assertEqual(maxdiff3, 0, atol=5e-2, rtol=5e-3)
 
     @onlyCUDA
     @skipCUDAIfRocm
@@ -18655,6 +18655,7 @@ class TestNNDeviceType(NNTestCase):
     @skipCUDAIfNoCudnn
     @dtypes(torch.float, torch.float16)
     @precisionOverride({torch.half: 0.002, torch.float: 1e-4})
+    @tf32_on_and_off(0.002)
     def test_cudnn_convolution_relu(self, device, dtype):
         for batch, groups, image_size, kernel_size, memory_format in \
                 product((1, 2, 3),
@@ -18678,6 +18679,7 @@ class TestNNDeviceType(NNTestCase):
     @skipCUDAIfNoCudnn
     @dtypes(torch.float, torch.float16)
     @precisionOverride({torch.half: 0.002, torch.float: 1e-4})
+    @tf32_on_and_off(0.002)
     def test_cudnn_convolution_add_relu(self, device, dtype):
         for batch, groups, image_size, kernel_size, memory_format in \
             product((1, 2, 3),

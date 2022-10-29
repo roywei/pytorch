@@ -1289,7 +1289,9 @@ int64_t check_gpu_tensors_same_device(const std::vector<at::Tensor>& tensors) {
 std::vector<at::Tensor> flatten_for_scatter_gather(
     std::vector<std::vector<at::Tensor>>& tensor_lists,
     std::vector<at::Tensor>& other,
-    size_t world_size) {
+    size_t world_size,
+    size_t rank,
+    bool no_copy) {
   if (tensor_lists.size() != other.size()) {
     TORCH_CHECK(false,
         "Tensor list operands to scatter/gather must have the same length");
@@ -1320,8 +1322,37 @@ std::vector<at::Tensor> flatten_for_scatter_gather(
             "All tensor operands to scatter/gather must have the same number of elements");
       }
     }
-    // Flatten the tensors (from all ranks) into a single big tensor.
-    flattened[i] = newLikeFlat(tensor_lists, i);
+
+    if (no_copy) {
+      // no_copy operation requires all tensors in tensor_list are contiguous views
+      // into a single flattened tensor
+      for (auto j = size_t{}; j < tensor_lists[i].size(); ++j) {
+        auto t = tensor_lists[i][j];
+        if (!tensor_lists[i][j].storage().is_alias_of(tensor_lists[i][0].storage()) ||
+            tensor_lists[i][j].storage_offset() != (tensor_lists[i][0].storage_offset() +
+              j * tensor_lists[i][0].numel())) {
+          no_copy = false;
+          break;
+        }
+      }
+      // no_copy operation is allowed if other tensor does not share storage with tensors
+      // in tensor_list or other tensor is properly aligned according to rank.
+      if (other[i].storage().is_alias_of(tensor_lists[i][0].storage()) &&
+          other[i].storage_offset() != (tensor_lists[i][0].storage_offset() +
+            rank * tensor_lists[i][0].numel())) {
+        no_copy = false;
+      }
+    }
+
+    if (no_copy) {
+      flattened[i] = at::empty({0}, other[i].options()).set_(
+          tensor_lists[i][0].storage(),
+          tensor_lists[i][0].storage_offset(),
+          world_size * other[i].numel(), {});
+    } else {
+      // Flatten the tensors (from all ranks) into a single big tensor.
+      flattened[i] = newLikeFlat(tensor_lists, i);
+    }
   }
   return flattened;
 }
@@ -1774,7 +1805,7 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::allgather(
   check_gpu_tensors_different_devices(inputTensors);
 
   auto outputFlattened =
-      flatten_for_scatter_gather(outputTensors, inputTensors, size_);
+      flatten_for_scatter_gather(outputTensors, inputTensors, size_, rank_, opts.noCopy);
   check_gpu_tensors_different_devices(outputFlattened);
 
   // @lint-ignore CLANGTIDY
@@ -1812,6 +1843,15 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::allgather(
         for (const auto i : c10::irange(outputTensors.size())) {
           at::cuda::CUDAStreamGuard guard(ncclStreams[i]);
           for (const auto j : c10::irange(outputTensors[0].size())) {
+            // Skip copy if it's in-place operation, where the input and
+            // output tensors share the same storage
+            if (outputFlattened[i][j].storage().is_alias_of(
+                outputTensors[i][j].storage()) &&
+                outputTensors[i][j].storage_offset() ==
+                (outputTensors[i][0].storage_offset() +
+                 outputTensors[i][j].numel() * j)) {
+              break;
+            }
             // See [Sync Streams].
             c10::cuda::CUDACachingAllocator::recordStream(
                 outputTensors[i][j].storage().data_ptr(), ncclStreams[i]);
@@ -1851,7 +1891,7 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::reduce_scatter(
       std::vector<int64_t>());  // outSplitSizes
 
   auto inputFlattened =
-      flatten_for_scatter_gather(inputTensors, outputTensors, size_);
+      flatten_for_scatter_gather(inputTensors, outputTensors, size_, rank_, opts.noCopy);
   check_gpu_tensors_different_devices(inputFlattened);
 
   return collective(
@@ -1877,6 +1917,15 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::reduce_scatter(
         for (const auto i : c10::irange(inputTensors.size())) {
           at::cuda::CUDAStreamGuard guard(ncclStreams[i]);
           for (const auto j : c10::irange(inputTensors[0].size())) {
+            // Skip copy if it's in-place operation, where the input and
+            // output tensors share the same storage
+            if (inputFlattened[i][j].storage().is_alias_of(
+                inputTensors[i][j].storage()) &&
+                inputTensors[i][j].storage_offset() ==
+                (inputTensors[i][0].storage_offset() +
+                 inputTensors[i][j].numel() * j)) {
+              break;
+            }
             // See [Sync Streams].
             c10::cuda::CUDACachingAllocator::recordStream(
                 inputTensors[i][j].storage().data_ptr(), ncclStreams[i]);
