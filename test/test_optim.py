@@ -671,6 +671,7 @@ class TestOptim(TestCase):
             )
 
     def test_nadam(self):
+        torch.manual_seed(0)
         for optimizer in [optim.NAdam, optim_mt.NAdam]:
             self._test_basic_cases(
                 lambda weight, bias: optimizer([weight, bias], lr=1e-3)

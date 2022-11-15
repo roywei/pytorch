@@ -334,12 +334,28 @@ class ProcessGroupNCCLTest(MultiProcessTestCase):
             tensors = [torch.tensor([self.rank + 1.]).cuda(local_device_id)]
 
             allreduce(tensors, c10d.ReduceOp.AVG)
-
             # TODO(#38095): Replace assertEqualIgnoreType. See issue #38095
+            ndev = float(self.world_size)
             self.assertEqualIgnoreType(
                 torch.tensor([ndev * (ndev + 1.) / (2. * ndev)]),
                 tensors[0],
             )
+
+        # Premul Sum
+        if torch.cuda.nccl.version() >= (2, 11, 1):
+            for dtype in torch.half, torch.float, torch.double:
+                for factor in (3.0,
+                               (torch.tensor([5.0], device=local_device_id, dtype=dtype),)):
+                    tensors = [torch.tensor([self.rank + 1]).cuda(local_device_id).to(dtype=dtype)]
+
+                    allreduce(tensors, c10d.make_nccl_premul_sum(factor))
+
+                    f = factor if isinstance(factor, float) else factor[0]
+                    # TODO(#38095): Replace assertEqualIgnoreType. See issue #38095
+                    self.assertEqualIgnoreType(
+                        f * torch.tensor([float(self.world_size * (self.world_size + 1) / 2)], device=local_device_id),
+                        tensors[0],
+                    )
 
         # Product
         tensors = [torch.tensor([self.rank + 1]).cuda(local_device_id)]
@@ -363,9 +379,10 @@ class ProcessGroupNCCLTest(MultiProcessTestCase):
         allreduce(tensors, c10d.ReduceOp.MAX)
         self.assertEqual(torch.tensor([self.world_size]), tensors[0])
 
-        for op in (c10d.ReduceOp.BAND, c10d.ReduceOp.BOR, c10d.ReduceOp.BXOR):
+        for op, err in zip((c10d.ReduceOp.BAND, c10d.ReduceOp.BOR, c10d.ReduceOp.BXOR),
+                           ("ReduceOp.BAND", "ReduceOp.BOR", "ReduceOp.BXOR")):
             with self.assertRaisesRegex(
-                RuntimeError, "Cannot use " + str(op) + " with NCCL"
+                    RuntimeError, "Cannot use " + err + " with NCCL"
             ):
                 allreduce(tensors, op)
 
@@ -403,10 +420,16 @@ class ProcessGroupNCCLTest(MultiProcessTestCase):
                     tensors[0],
                 )
 
+            # Premul sum
+            for factor in (3.0, (torch.tensor([5.0], device=local_device_id),)):
+                reduce([t.float() for t in tensors], rt, 0, c10d.make_nccl_premul_sum(factor))
 
-            for op in (c10d.ReduceOp.BAND, c10d.ReduceOp.BOR, c10d.ReduceOp.BXOR):
+            for op, err in zip(
+                (c10d.ReduceOp.BAND, c10d.ReduceOp.BOR, c10d.ReduceOp.BXOR),
+                ("ReduceOp.BAND", "ReduceOp.BOR", "ReduceOp.BXOR"),
+            ):
                 with self.assertRaisesRegex(
-                    RuntimeError, "Cannot use " + str(op) + " with NCCL"
+                        RuntimeError, "Cannot use " + err + " with NCCL"
                 ):
                     reduce(tensors, self.rank, rt, op)
 
@@ -887,6 +910,12 @@ class ProcessGroupNCCLTest(MultiProcessTestCase):
             prod_val = prod_val * (self.rank + 1 + k)
         expected = torch.tensor(prod_val)
         self.assertEqualIgnoreType(expected, output_tensor)
+
+        # for factor in (3.0, (torch.tensor([5.0], device=self.rank),)):
+        output = [t.float() for t in output]
+        tensor_lists = [[t.float() for t in tl] for tl in tensor_lists]
+        for factor in ((torch.tensor([5.0], device=self.rank),),):
+            reduce_scatter([t.float() for t in output], tensor_lists, c10d.make_nccl_premul_sum(factor))
 
     @requires_nccl()
     @sandcastle_skip_if(torch.cuda.device_count() < 2, "NCCL test requires 2+ GPUs")

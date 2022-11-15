@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
 from torch.nn.utils._per_sample_grad import call_for_per_sample_grads
-from torch.testing._internal.common_cuda import TEST_CUDA
+from torch.testing._internal.common_cuda import TEST_CUDA, tf32_off
 from torch.testing._internal.common_device_type import OpDTypes, instantiate_device_type_tests, ops
 from torch.testing._internal.common_nn import TestBase, module_tests, new_module_tests
 from torch.testing._internal.common_utils import TestCase, freeze_rng_state, make_tensor, run_tests, parametrize
@@ -540,4 +540,5 @@ def clone_if_tensor(t):
 instantiate_device_type_tests(TestExpandedWeightHelperFunction, globals())
 instantiate_device_type_tests(TestExpandedWeightFunctional, globals())
 if __name__ == '__main__':
-    run_tests()
+    with torch.backends.cudnn.flags(enabled=True, allow_tf32=False):
+        run_tests()

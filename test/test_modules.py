@@ -13,6 +13,7 @@ from torch.testing._internal.common_modules import module_db, modules, TrainEval
 from torch.testing._internal.common_utils import (
     TestCase, run_tests, freeze_rng_state, mock_wrapper, get_tensors_from, gradcheck, gradgradcheck, skipIfMps)
 from unittest.mock import patch, call
+from torch.testing._internal.common_cuda import tf32_off
 
 
 class TestModule(TestCase):
@@ -488,6 +489,7 @@ class TestModule(TestCase):
     @toleranceOverride({torch.float32: tol(5e-2, 0),
                         torch.float64: tol(4e-4, 0)})
     @modules(module_db)
+    @tf32_off()
     def test_cpu_gpu_parity(self, device, dtype, module_info, training):
         # TODO: RNN / GRU / LSTM don't support backwards on eval mode for cuDNN; skip this in a
         # nicer way for eval mode only.

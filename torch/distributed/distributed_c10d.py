@@ -10,6 +10,7 @@ from typing import Callable, Dict, Optional, Tuple, Union
 
 import torch
 from torch._C._distributed_c10d import (
+    AllgatherOptions,
     AllreduceCoalescedOptions,
     AllreduceOptions,
     AllToAllOptions,
@@ -26,6 +27,7 @@ from torch._C._distributed_c10d import (
     DebugLevel,
     get_debug_level,
 )
+from torch._C._distributed_c10d import make_nccl_premul_sum  # noqa: F401
 from torch._six import string_classes
 
 from .constants import default_pg_timeout
@@ -173,9 +175,9 @@ class _reduce_op(object):
 
     def __init__(self):
         # __members__ is a dict storing key-value pairs for enum classes
-        for k, v in ReduceOp.__members__.items():
+        for k, v in ReduceOp.Kind.__members__.items():
             setattr(self, k, v)
-        self.__members__ = ReduceOp.__members__
+        self.__members__ = ReduceOp.Kind.__members__
 
     def __getattribute__(self, key):
         warnings.warn(
@@ -1986,7 +1988,11 @@ def scatter_object_list(
     scatter_object_output_list[0] = _tensor_to_object(output_tensor, obj_tensor_size)
 
 
-def all_gather(tensor_list, tensor, group=None, async_op=False):
+def all_gather(tensor_list,
+               tensor,
+               group=None,
+               async_op=False,
+               no_copy=False):
     """
     Gathers tensors from the whole group in a list.
 
@@ -1999,6 +2005,12 @@ def all_gather(tensor_list, tensor, group=None, async_op=False):
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used.
         async_op (bool, optional): Whether this op should be an async op
+        no_copy (bool, optional): Do not unflatten output tensors if they
+            are already contiguous views into an already flattened tensor
+            and backend is NCCL. If input tensor shares storage with
+            output tensors, it must be properly aligned, i.e.
+            offset == rank * flat_output.numel() // world_size.
+            In all other circumstances this argument has no effect.
 
     Returns:
         Async work handle, if async_op is set to True.
@@ -2045,11 +2057,14 @@ def all_gather(tensor_list, tensor, group=None, async_op=False):
     ]
     tensor = tensor if not tensor.is_complex() else torch.view_as_real(tensor)
 
+    opts = AllgatherOptions()
+    opts.noCopy = no_copy
+
     if group is None:
         default_pg = _get_default_group()
-        work = default_pg.allgather([tensor_list], [tensor])
+        work = default_pg.allgather([tensor_list], [tensor], opts)
     else:
-        work = group.allgather([tensor_list], [tensor])
+        work = group.allgather([tensor_list], [tensor], opts)
 
     if async_op:
         return work
@@ -2404,7 +2419,12 @@ def reduce_scatter_multigpu(
         work.wait()
 
 
-def reduce_scatter(output, input_list, op=ReduceOp.SUM, group=None, async_op=False):
+def reduce_scatter(output,
+                   input_list,
+                   op=ReduceOp.SUM,
+                   group=None,
+                   async_op=False,
+                   no_copy=False):
     """
     Reduces, then scatters a list of tensors to all processes in a group.
 
@@ -2414,6 +2434,12 @@ def reduce_scatter(output, input_list, op=ReduceOp.SUM, group=None, async_op=Fal
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used.
         async_op (bool, optional): Whether this op should be an async op.
+        no_copy (bool, optional): Do not flatten input tensors if they are
+            contiguous views into an already flattened tensor and backend
+            is NCCL. If output tensor shares storage with input tensors,
+            it must be properly aligned, thus 
+            offset == rank * flat_input.numel() // world_size.
+            In all other circumstances this argument has no effect.
 
     Returns:
         Async work handle, if async_op is set to True.

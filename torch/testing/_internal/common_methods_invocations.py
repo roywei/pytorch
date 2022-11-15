@@ -6381,17 +6381,23 @@ def sample_inputs_spectral_ops(self, device, dtype, requires_grad=False, **kwarg
         # cuFFT supports powers of 2 for half and complex half precision
         # NOTE: For hfft, hfft2, hfftn, irfft, irfft2, irfftn with default args
         # where output_size n=2*(input_size - 1), we make sure that logical fft size is a power of two
+        low = None
+        high = None
         if self.name in ['fft.hfft', 'fft.irfft']:
             shapes = ((2, 9, 9), (33,))
         elif self.name in ['fft.hfft2', 'fft.irfft2']:
             shapes = ((2, 8, 9), (33,))
         elif self.name in ['fft.hfftn', 'fft.irfftn']:
             shapes = ((2, 2, 33), (33,))
+            # Adjusting the limits because the test would be flaky due to over-saturation of float16
+            # See: https://github.com/pytorch/pytorch/pull/81416
+            low = -1.0
+            high = 1.0
         else:
             shapes = ((2, 8, 16), (32,))
-        nd_tensor = partial(make_tensor, shapes[0], device=device,
+        nd_tensor = partial(make_tensor, shapes[0], device=device, low=low, high=high,
                             dtype=dtype, requires_grad=requires_grad)
-        oned_tensor = partial(make_tensor, shapes[1], device=device,
+        oned_tensor = partial(make_tensor, shapes[1], device=device, low=low, high=high,
                               dtype=dtype, requires_grad=requires_grad)
 
     if self.ndimensional == SpectralFuncType.ND:
@@ -14613,7 +14619,7 @@ op_db: List[OpInfo] = [
         supports_forward_ad=True,
         supports_autograd=True,
         supports_fwgrad_bwgrad=True,
-        assert_autodiffed=False,
+        assert_autodiffed=True,
         supports_out=False,
         inplace_variant=lambda x: torch.nn.functional.silu(x, inplace=True),
         decorators=[
@@ -14627,7 +14633,8 @@ op_db: List[OpInfo] = [
         skips=(
             DecorateInfo(unittest.skip("Skipped!"), 'TestUnaryUfuncs', 'test_reference_numerics_normal',
                          dtypes=(torch.cfloat,), device_type='cpu'),
-        )
+        ),
+        autodiff_nonfusible_nodes=["aten::silu"],
     ),
     # TODO: combine this with the nn.functional.silu OpInfo when
     # complex autodiff for silu is supported or when

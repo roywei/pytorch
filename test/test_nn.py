@@ -13566,11 +13566,11 @@ class TestNNDeviceType(NNTestCase):
 
 
     @onlyCUDA
-    @tf32_on_and_off(0.01)
     @dtypes(torch.float, torch.double, torch.half)
     # Very similar to test_Conv2d_naive_groups but with special care to handle
     # the number of groups == number of input channels
     @torch.backends.cudnn.flags(enabled=True, benchmark=False)
+    @tf32_on_and_off(0.01)
     def test_Conv2d_depthwise_naive_groups(self, device, dtype):
         for depth_multiplier in [1, 2]:
             m = nn.Conv2d(2, 2 * depth_multiplier, kernel_size=3, groups=2).to(device, dtype)
@@ -13611,8 +13611,8 @@ class TestNNDeviceType(NNTestCase):
 
     @onlyCUDA
     @dtypes(torch.float, torch.double, torch.half)
-    @tf32_on_and_off(0.005)
     @torch.backends.cudnn.flags(enabled=True, benchmark=False)
+    @tf32_on_and_off(0.005)
     def test_Conv3d_depthwise_naive_groups(self, device, dtype):
         for depth_multiplier in [1, 2]:
             m = nn.Conv3d(2, 2 * depth_multiplier, kernel_size=3, groups=2).to(device, dtype)
@@ -19751,6 +19751,7 @@ torch.cuda.synchronize()
     @skipCUDAIfNoCudnn
     @dtypes(torch.float, torch.float16)
     @precisionOverride({torch.half: 0.002, torch.float: 1e-4})
+    @tf32_on_and_off(0.005)
     def test_cudnn_convolution_relu(self, device, dtype):
         for batch, groups, image_size, kernel_size, memory_format in \
                 product((1, 2, 3),
@@ -19777,6 +19778,7 @@ torch.cuda.synchronize()
     @skipCUDAIfNoCudnn
     @dtypes(torch.float, torch.float16)
     @precisionOverride({torch.half: 0.002, torch.float: 1e-4})
+    @tf32_on_and_off(0.005)
     def test_cudnn_convolution_add_relu(self, device, dtype):
         for batch, groups, image_size, kernel_size, memory_format in \
             product((1, 2, 3),

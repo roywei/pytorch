@@ -5037,6 +5037,7 @@ class TensorPipeAgentRpcTest(RpcAgentTestFixture, RpcTestCommon):
         rpc.shutdown()
 
     # Dynamic RPC existing ranks can communicate with new ranks using CUDA rpc
+    @sandcastle_skip_if(True, "Skipped: #81622")
     @skip_if_lt_x_gpu(2)
     @dist_init(setup_rpc=False)
     def test_dynamic_rpc_existing_rank_can_communicate_with_new_rank_cuda(self):

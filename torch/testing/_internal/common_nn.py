@@ -4184,7 +4184,7 @@ new_module_tests = [
         input_size=(2, 3, 4),
         desc='relu_activation',
         with_tf32=True,
-        tf32_precision=0.1,
+        tf32_precision=0.2,
         # TODO(#50743): figure out the error
         # RuntimeError: The size of tensor a (6) must match the size of tensor b (4)
         # at non-singleton dimension 2
