@@ -1,0 +1,6 @@
+--reset
+
+--sdt=f32
+--ddt=f32
+
+--batch=harness_concat_common
