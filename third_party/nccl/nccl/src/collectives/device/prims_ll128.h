@@ -1,5 +1,5 @@
 /*************************************************************************
- * Copyright (c) 2016-2021, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2016-2022, NVIDIA CORPORATION. All rights reserved.
  *
  * See LICENSE.txt for license information
  ************************************************************************/
@@ -8,9 +8,9 @@
 
 #define NCCL_LL128_FLAGTHREAD (NCCL_LL128_LINEELEMS-1)
 
-template<typename T, typename RedOp, typename Fan, int Direct>
-class Primitives<T, RedOp, Fan, Direct, ProtoLL128>:
-  public PrimitivesWithoutDirect<Primitives<T, RedOp, Fan, Direct, ProtoLL128>> {
+template<typename T, typename RedOp, typename Fan, int Direct, int P2p>
+class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p>:
+  public PrimitivesWithoutDirect<Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p>> {
 
   static constexpr int MaxRecv = Fan::MaxRecv, MaxSend = Fan::MaxSend;
   static constexpr int Input=0, Output=1;
@@ -19,6 +19,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128>:
   const int nthreads;
   const int wid;
   const int stepSize;
+  const int sliceSteps;
   const int warp;
   const bool flagThread;
   const int group;
@@ -45,11 +46,11 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128>:
   inline __device__ int sendOffset(int i) { return (sendStep[i]%NCCL_STEPS)*stepSize; }
   inline __device__ uint64_t* recvPtr(int i) { return recvBuff[i]+recvOffset(i); }
   inline __device__ uint64_t* sendPtr(int i) { return sendBuff[i]+sendOffset(i); }
-  inline __device__ uint64_t recvFlag(int i) { return recvStep[i]+1; }
-  inline __device__ uint64_t sendFlag(int i) { return sendStep[i]+1; }
+  inline __device__ uint64_t recvFlag(int i) { return recvStep[i]+sliceSteps; }
+  inline __device__ uint64_t sendFlag(int i) { return sendStep[i]+sliceSteps; }
 
   inline __device__ void barrier() {
-    asm volatile ("bar.sync %1, %0;" :: "r"(nthreads), "r"(1+group));
+    asm volatile ("bar.sync %1, %0;" :: "r"(nthreads), "r"(15-group));
   }
 
   uint32_t abort = 0;
@@ -66,22 +67,22 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128>:
   inline __device__ void waitSend(int nbytes) {
     if (sendConnHeadPtr) {
       int spins = 0;
-      while (sendConnHeadCache + NCCL_STEPS < sendConnHead + 1) {
+      while (sendConnHeadCache + NCCL_STEPS < sendConnHead + sliceSteps) {
         sendConnHeadCache = *sendConnHeadPtr;
         if (checkAbort(spins, wid, 1)) break;
       }
       if (sendConnFifoPtr) {
         sendConnFifoPtr[sendStep[wid]%NCCL_STEPS] = nbytes;
       }
-      sendConnHead += 1;
+      sendConnHead += sliceSteps;
     }
   }
 
   inline __device__ void postRecv() {
-    if (recvConnHeadPtr) *recvConnHeadPtr = recvConnHead += 1;
+    if (recvConnHeadPtr) *recvConnHeadPtr = recvConnHead += sliceSteps;
   }
   inline __device__ void postSend() {
-    if (sendConnTailPtr) { __threadfence(); *sendConnTailPtr = sendConnTail += 1; }
+    if (sendConnTailPtr) { __threadfence(); *sendConnTailPtr = sendConnTail += sliceSteps; }
   }
 
   template<int WordPerThread>
@@ -277,7 +278,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128>:
   static constexpr int DataEltPerSlice = (WireWordPerSlice - WireWordPerSlice/NCCL_LL128_LINEELEMS)*(sizeof(uint64_t)/sizeof(T));
 
   template <int RECV, int SEND, int SrcBuf, int DstBuf>
-  __device__ void GenericOp(intptr_t srcIx, intptr_t dstIx, int nelem, bool postOp) {
+  __device__ __forceinline__ void GenericOp(intptr_t srcIx, intptr_t dstIx, int nelem, bool postOp) {
     constexpr int SRC = SrcBuf != -1 ? 1 : 0;
     constexpr int DST = DstBuf != -1 ? 1 : 0;
     static_assert(-1<=SrcBuf && SrcBuf < 2, "Uhoh");
@@ -313,9 +314,9 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128>:
     }
 
     barrier();
-    if (SEND) for (int i=0; i < MaxSend; i++) sendStep[i] += 1;
+    if (SEND) for (int i=0; i < MaxSend; i++) sendStep[i] += sliceSteps;
     if (SEND) postSend();
-    if (RECV) for (int i=0; i < MaxRecv; i++) recvStep[i] += 1;
+    if (RECV) for (int i=0; i < MaxRecv; i++) recvStep[i] += sliceSteps;
     if (RECV) postRecv();
   }
 
@@ -354,12 +355,13 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128>:
 public:
   __device__ Primitives(
       const int tid, const int nthreads, int const *recvPeers, int const *sendPeers,
-      void const *inputBuf, void *outputBuf, int group=0
+      void const *inputBuf, void *outputBuf, uint64_t redOpArg, int chunkSteps, int sliceSteps, int group=0
     ):
-    redOp(FuncTraits<RedOp>().make(ncclShmem.comm.nRanks)),
+    redOp(redOpArg),
     tid(tid), nthreads(nthreads), wid(tid%WARP_SIZE), warp(tid/WARP_SIZE),
     flagThread((tid%8)==7), group(group),
-    stepSize(ncclShmem.comm.buffSizes[NCCL_PROTO_LL128]/NCCL_STEPS/sizeof(uint64_t)) {
+    stepSize(ncclShmem.comm.buffSizes[NCCL_PROTO_LL128]/NCCL_STEPS/sizeof(uint64_t)),
+    sliceSteps(sliceSteps) {
 
     auto *channel = &ncclShmem.channel;
     int nrecv=0, nsend=0;

@@ -966,3 +966,30 @@ if sys.executable != 'torch_deploy':
     from . import library
     if not TYPE_CHECKING:
         from . import _meta_registrations
+
+# telemetry code for aws pytorch conda package
+try:
+    if (os.getenv('OPT_OUT_TRACKING') is None or os.getenv('OPT_OUT_TRACKING') not in ["True", "TRUE", "true"]):
+        import subprocess
+        import os.path as _path
+        from . import aws
+
+        # DLC_CONTAINER_TYPE: training and inference
+        if os.getenv("DLC_CONTAINER_TYPE"):
+            img_type = os.getenv("DLC_CONTAINER_TYPE")
+        elif os.path.isdir("/opt/aws/dlami"):
+            img_type = "dlami"
+        elif os.path.isfile("/.dockerenv"):
+            img_type = "docker"
+        else:
+            img_type = "ami" # suggest value here for EC2 instance using non DLAMI
+
+        pkg_type = "conda"
+        telemetry_script_pth = _path.join(_path.abspath( _path.dirname(__file__)), "aws/deep_learning_telemetry.py")
+        cmd = f"python3 {telemetry_script_pth} --framework pytorch --img-type {img_type} --pkg-type {pkg_type} " \
+            "--framework-version " + __version__
+
+        # use Popen to run script asynchronously, while discarding outputs
+        subprocess.Popen([cmd], shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+except Exception:
+    pass

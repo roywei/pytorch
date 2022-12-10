@@ -1,12 +1,12 @@
 /*************************************************************************
- * Copyright (c) 2016-2021, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2016-2022, NVIDIA CORPORATION. All rights reserved.
  *
  * See LICENSE.txt for license information
  ************************************************************************/
 
-template<typename T, typename RedOp, typename Fan, int Direct>
-class Primitives<T, RedOp, Fan, Direct, ProtoLL>:
-  public PrimitivesWithoutDirect<Primitives<T, RedOp, Fan, Direct, ProtoLL>> {
+template<typename T, typename RedOp, typename Fan, int Direct, int P2p>
+class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p>:
+  public PrimitivesWithoutDirect<Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p>> {
 
   static constexpr int MaxRecv = Fan::MaxRecv, MaxSend = Fan::MaxSend;
   static constexpr int Input=0, Output=1;
@@ -16,6 +16,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL>:
   const int wid;
   const int group;
   const int stepLines;
+  const int sliceSteps;
   Fan fan;
   T *userBufs[2];
   struct ncclConnInfo* recvConn = NULL;
@@ -37,11 +38,11 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL>:
   inline __device__ int sendOffset(int i) { return (sendStep[i]%NCCL_STEPS)*stepLines; }
   inline __device__ union ncclLLFifoLine* recvPtr(int i) { return recvBuff[i]+recvOffset(i); }
   inline __device__ union ncclLLFifoLine* sendPtr(int i) { return sendBuff[i]+sendOffset(i); }
-  inline __device__ uint32_t recvFlag(int i) { return NCCL_LL_FLAG(recvStep[i]+1); }
-  inline __device__ uint32_t sendFlag(int i) { return NCCL_LL_FLAG(sendStep[i]+1); }
+  inline __device__ uint32_t recvFlag(int i) { return NCCL_LL_FLAG(recvStep[i]+sliceSteps); }
+  inline __device__ uint32_t sendFlag(int i) { return NCCL_LL_FLAG(sendStep[i]+sliceSteps); }
 
   inline __device__ void barrier() {
-    asm volatile ("bar.sync %1, %0;" :: "r"(nthreads), "r"(1+group));
+    asm volatile ("bar.sync %1, %0;" :: "r"(nthreads), "r"(15-group));
   }
 
   uint32_t abort = 0;
@@ -58,7 +59,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL>:
   inline __device__ void waitSend(int nbytes) {
     if (sendConnHeadPtr) {
       int spins = 0;
-      while (sendConnHeadCache + NCCL_STEPS < sendConnHead + 1) {
+      while (sendConnHeadCache + NCCL_STEPS < sendConnHead + sliceSteps) {
         sendConnHeadCache = *sendConnHeadPtr;
         if (checkAbort(spins, 1)) break;
       }
@@ -66,17 +67,17 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL>:
         int size = ((sendConnHead & NCCL_LL_CLEAN_MASK) == NCCL_LL_CLEAN_MASK) ? stepLines*sizeof(union ncclLLFifoLine) : nbytes;
         sendConnFifoPtr[sendConnHead%NCCL_STEPS] = size;
       }
-      sendConnHead += 1;
+      sendConnHead += sliceSteps;
     }
     barrier();
   }
 
   inline __device__ void incRecv(int i) {
-    recvStep[i] += 1;
+    recvStep[i] += sliceSteps;
   }
   inline __device__ void postRecv() {
     barrier();
-    if (recvConnHeadPtr) *recvConnHeadPtr = recvConnHead += 1;
+    if (recvConnHeadPtr) *recvConnHeadPtr = recvConnHead += sliceSteps;
   }
 
   inline __device__ void incSend(int i, int offset) {
@@ -85,7 +86,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL>:
     if ((sendStep[i] & NCCL_LL_CLEAN_MASK) == NCCL_LL_CLEAN_MASK) {
       for (int o = offset; o<stepLines; o+=nthreads) storeLL(sendPtr(i)+o, 0, sendFlag(i));
     }
-    sendStep[i]++;
+    sendStep[i] += sliceSteps;
   }
 
   __device__ uint64_t readLL(int offset, int i) {
@@ -218,7 +219,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL>:
   }
 
   template <int RECV, int SEND, int SrcBuf, int DstBuf>
-  __device__ void LLGenericOp(intptr_t srcIx, intptr_t dstIx, int nelem, bool postOp) {
+  __device__ __forceinline__ void LLGenericOp(intptr_t srcIx, intptr_t dstIx, int nelem, bool postOp) {
     constexpr int SRC = SrcBuf != -1 ? 1 : 0;
     constexpr int DST = DstBuf != -1 ? 1 : 0;
     T *srcElts = SrcBuf == -1 ? nullptr : userBufs[SrcBuf] + srcIx;
@@ -316,11 +317,12 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL>:
  public:
   __device__  Primitives(
       const int tid, const int nthreads, int const *recvPeers, int const *sendPeers,
-      void const *inputBuf, void *outputBuf, int group=0
+      void const *inputBuf, void *outputBuf, uint64_t redOpArg, int chunkSteps, int sliceSteps, int group=0
     ):
-    redOp(FuncTraits<RedOp>().make(ncclShmem.comm.nRanks)),
+    redOp(redOpArg),
     tid(tid), nthreads(nthreads), wid(tid%WARP_SIZE), group(group),
-    stepLines(ncclShmem.comm.buffSizes[NCCL_PROTO_LL]/NCCL_STEPS/sizeof(ncclLLFifoLine)) {
+    stepLines(ncclShmem.comm.buffSizes[NCCL_PROTO_LL]/NCCL_STEPS/sizeof(ncclLLFifoLine)),
+    sliceSteps(sliceSteps) {
 
     auto *channel = &ncclShmem.channel;
     // If we are going to support oneshot collNet + LL, then we would need to add connector index here

@@ -1,5 +1,5 @@
 /*************************************************************************
- * Copyright (c) 2016-2021, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2016-2022, NVIDIA CORPORATION. All rights reserved.
  *
  * See LICENSE.txt for license information
  ************************************************************************/
@@ -20,11 +20,9 @@
  * to how that protocol operates with a consistent interface so that our
  * algorithm code can operate protocol parametrically.
  */
-template<int SlicePerChunk_1, int StepPerSlice_1, int Unroll_1 = COLL_UNROLL>
+template<int Unroll_1 = COLL_UNROLL>
 struct ProtoSimple {
   static constexpr int Id = NCCL_PROTO_SIMPLE;
-  static constexpr int SlicePerChunk = SlicePerChunk_1;
-  static constexpr int StepPerSlice = StepPerSlice_1;
   static constexpr int Unroll = Unroll_1;
 
   // Data bytes (no flags etc) in one step of the fifo queue.
@@ -109,7 +107,7 @@ struct FanSymmetric {
 };
 
 // The primitives class. Specialized per protocol in the other headers.
-template<typename T, typename RedOp, typename Fan, int Direct, typename Proto>
+template<typename T, typename RedOp, typename Fan, int Direct, typename Proto, int P2p>
 class Primitives;
 
 // Used by LL & LL128 to implement direct members in the naive way.
